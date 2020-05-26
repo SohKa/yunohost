@@ -2391,6 +2391,134 @@ def _parse_args_for_action(action, args={}):
     return _parse_args_in_yunohost_format(args, action_args)
 
 
+class Question:
+    "empty class to store questions information"
+
+
+class YunoHostArgumentFormatParser(object):
+    hide_user_input_in_prompt = False
+
+    def parse_question(self, question, user_answers):
+        parsed_question = Question()
+
+        parsed_question.name = question['name']
+        parsed_question.default = question.get('default', None)
+        parsed_question.choices = question.get('choices', [])
+        parsed_question.optional = question.get('optional', False)
+        parsed_question.ask = question.get('ask')
+        parsed_question.value = user_answers.get(parsed_question.name)
+
+        if parsed_question.ask is None:
+            parsed_question.ask = "Enter value for '%s':" % parsed_question.name
+
+        return parsed_question
+
+    def parse(self, question, user_answers):
+        question = self.parse_question(question, user_answers)
+
+        if question.value is None:
+            text_for_user_input_in_cli = self._format_text_for_user_input_in_cli(question)
+
+            try:
+                question.value = msignals.prompt(text_for_user_input_in_cli, self.hide_user_input_in_prompt)
+            except NotImplementedError:
+                question.value = None
+
+        # we don't have an answer, check optional and default_value
+        if question.value is None:
+            if not question.optional and question.default is None:
+                raise YunohostError('app_argument_required', name=question.name)
+            else:
+                question.value = self.default_value if question.default is None else question.default
+
+        # we have an answer, do some post checks
+        if question.value is not None:
+            if question.choices and question.value not in question.choices:
+                raise YunohostError('app_argument_choice_invalid', name=question.name,
+                                    choices=', '.join(question.choices))
+
+        # this is done to enforce a certain formating like for boolean
+        # by default it doesn't do anything
+        question.value = self._post_parse_value(question)
+
+        return (question.value, self.argument_type)
+
+    def _format_text_for_user_input_in_cli(self, question):
+        text_for_user_input_in_cli = _value_for_locale(question.ask)
+
+        if question.default is not None:
+            text_for_user_input_in_cli += ' (default: {0})'.format(question.default)
+
+        if question.choices:
+            text_for_user_input_in_cli += ' [{0}]'.format(' | '.join(question.choices))
+
+        return text_for_user_input_in_cli
+
+    def _post_parse_value(self, question):
+        return question.value
+
+
+class StringArgumentParser(YunoHostArgumentFormatParser):
+    argument_type = "string"
+    default_value = ""
+
+
+class PasswordArgumentParser(YunoHostArgumentFormatParser):
+    hide_user_input_in_prompt = True
+    argument_type = "password"
+    default_value = ""
+
+
+class PathArgumentParser(YunoHostArgumentFormatParser):
+    argument_type = "path"
+    default_value = ""
+
+
+class BooleanArgumentParser(YunoHostArgumentFormatParser):
+    argument_type = "boolean"
+    default_value = False
+
+    def parse_question(self, question, user_answers):
+        question = super(BooleanArgumentParser, self).parse_question(question, user_answers)
+
+        if question.default is None:
+            question.default = False
+
+        return question
+
+    def _format_text_for_user_input_in_cli(self, question):
+        text_for_user_input_in_cli = _value_for_locale(question.ask)
+
+        text_for_user_input_in_cli += " [yes | no]"
+
+        if question.default is not None:
+            formatted_default = "yes" if question.default else "no"
+            text_for_user_input_in_cli += ' (default: {0})'.format(formatted_default)
+
+        return text_for_user_input_in_cli
+
+    def _post_parse_value(self, question):
+        if isinstance(question.value, bool):
+            return 1 if question.value else 0
+
+        if str(question.value).lower() in ["1", "yes", "y"]:
+            return 1
+
+        if str(question.value).lower() in ["0", "no", "n"]:
+            return 0
+
+        raise YunohostError('app_argument_choice_invalid', name=question.name,
+                            choices='yes, no, y, n, 1, 0')
+
+
+arguments_type_parsers = {
+    "string": StringArgumentParser,
+    "password": PasswordArgumentParser,
+    "path": PathArgumentParser,
+    "boolean": BooleanArgumentParser,
+}
+
+
 def _parse_args_in_yunohost_format(user_answers, argument_questions):
     """Parse arguments store in either manifest.json or actions.json or from a
     config panel against the user answers when they are present.
@@ -2408,6 +2536,12 @@ def _parse_args_in_yunohost_format(user_answers, argument_questions):
     parsed_answers_dict = OrderedDict()
 
     for question in argument_questions:
+        parser = arguments_type_parsers[question.get("type", "string")]()
+        parsed_answers_dict[question["name"]] = parser.parse(question=question, user_answers=user_answers)
+
+    return parsed_answers_dict
+
+    for x in []:
         question_name = question['name']
         question_type = question.get('type', 'string')
         question_default = question.get('default', None)
